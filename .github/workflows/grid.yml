@@ -54,13 +54,17 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: python -m pip install -q -r "$W/requirements.txt"
-      - name: Bars from private release (token secret)
+      - name: Bars from this repo's release (ciphertext, no token secret)
         env:
-          GH_TOKEN: ${{ secrets.BARS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}
         run: |
           t0=$(date +%s)
           mkdir -p "$TRADESYS_BARS"
-          gh release download bars --repo jsempppp-tech/tradesys --dir "$TRADESYS_BARS"
+          gh release download pack --repo "${{ github.repository }}" --pattern bars.npz.enc --dir "$RUNNER_TEMP"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$RUNNER_TEMP/bars.npz.enc" -pass env:ENGINE_KEY \
+            -out "$TRADESYS_BARS/MNQ_e008a4cedfb9_2021-01-01_2026-08-31.npz"
+          rm -f "$RUNNER_TEMP/bars.npz.enc"
           echo "bars_seconds=$(( $(date +%s) - t0 )) bytes=$(du -sb "$TRADESYS_BARS" | cut -f1)"
       - name: Run slice (output kept off the public log)
         run: |
