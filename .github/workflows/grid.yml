@@ -1,0 +1,85 @@
+# Public-repo compute lane test. The engine is AES-256 encrypted in this repo;
+# bars come from a PRIVATE release in another repo via a token secret.
+# Logs and artifacts of a public repo are public, so nothing readable is printed
+# or uploaded: engine output and results are encrypted before upload.
+name: grid
+
+on:
+  workflow_dispatch:
+    inputs:
+      slices: {description: matrix width, required: true, type: string, default: "1"}
+      limit: {description: cards per slice (0 = all), required: true, type: string, default: "200"}
+      grid: {description: grid, required: true, type: string, default: "C"}
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      slices: ${{ steps.gen.outputs.slices }}
+    steps:
+      - id: gen
+        run: python3 -c "import json,os; n=int('${{ inputs.slices }}'); assert 1<=n<=256; print('slices='+json.dumps(list(range(n))))" >> "$GITHUB_OUTPUT"
+
+  slice:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.setup.outputs.slices) }}
+    env:
+      W: ${{ github.workspace }}/w
+      PYTHONPATH: ${{ github.workspace }}/w
+      TRADESYS_BARS: ${{ github.workspace }}/bars
+      TRADESYS_OUT: ${{ github.workspace }}/out
+      SEMPER_SCRATCH: ${{ github.workspace }}/scratch
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner size
+        run: |
+          echo "nproc=$(nproc)"; free -g | head -2; df -h . | tail -1
+      - name: Decrypt engine
+        env:
+          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}
+        run: |
+          mkdir -p "$W"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in engine.tar.gz.enc -pass env:ENGINE_KEY | tar -xz -C "$W"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -q -r "$W/requirements.txt"
+      - name: Bars from private release (token secret)
+        env:
+          GH_TOKEN: ${{ secrets.BARS_TOKEN }}
+        run: |
+          t0=$(date +%s)
+          mkdir -p "$TRADESYS_BARS"
+          gh release download bars --repo jsempppp-tech/tradesys --dir "$TRADESYS_BARS"
+          echo "bars_seconds=$(( $(date +%s) - t0 )) bytes=$(du -sb "$TRADESYS_BARS" | cut -f1)"
+      - name: Run slice (output kept off the public log)
+        run: |
+          mkdir -p "$TRADESYS_OUT"
+          t0=$(date +%s)
+          cd "$W" && python -m tools.local_agent.cloud_run --grid "${{ inputs.grid }}" --slice "${{ matrix.slice }}" \
+            --of "${{ inputs.slices }}" --limit "${{ inputs.limit }}" --out "$TRADESYS_OUT" --batch 50 \
+            > "$TRADESYS_OUT/run.log" 2>&1 && rc=0 || rc=$?
+          echo "run_slice_wall_seconds=$(( $(date +%s) - t0 )) rc=$rc"
+          exit $rc
+      - name: Encrypt results
+        if: always()
+        env:
+          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}
+        run: |
+          tar -czf - -C "$TRADESYS_OUT" . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ENGINE_KEY -out results.tar.gz.enc
+          rm -rf "$TRADESYS_OUT" "$W" "$TRADESYS_BARS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r-${{ matrix.slice }}-of-${{ inputs.slices }}
+          path: results.tar.gz.enc
+          retention-days: 7

@@ -1,0 +1,26 @@
+# Measures how many jobs GitHub runs at once for this account on a public repo.
+name: probe
+on:
+  workflow_dispatch:
+    inputs:
+      n: {description: jobs, required: true, type: string, default: "40"}
+      secs: {description: seconds each job sleeps, required: true, type: string, default: "120"}
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      m: ${{ steps.g.outputs.m }}
+    steps:
+      - id: g
+        run: python3 -c "import json; print('m='+json.dumps(list(range(int('${{ inputs.n }}')))))" >> "$GITHUB_OUTPUT"
+  hold:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(needs.setup.outputs.m) }}
+    steps:
+      - run: echo "start=$(date -u +%s) nproc=$(nproc)"; sleep ${{ inputs.secs }}; echo "end=$(date -u +%s)"
