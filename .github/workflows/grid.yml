@@ -10,6 +10,7 @@ on:
       slices: {description: matrix width, required: true, type: string, default: "1"}
       limit: {description: cards per slice (0 = all), required: true, type: string, default: "200"}
       grid: {description: grid, required: true, type: string, default: "C"}
+      per_job: {description: engine processes per job (one per core), required: true, type: string, default: "4"}
 
 permissions:
   contents: read
@@ -65,9 +66,15 @@ jobs:
         run: |
           mkdir -p "$TRADESYS_OUT"
           t0=$(date +%s)
-          cd "$W" && python -m tools.local_agent.cloud_run --grid "${{ inputs.grid }}" --slice "${{ matrix.slice }}" \
-            --of "${{ inputs.slices }}" --limit "${{ inputs.limit }}" --out "$TRADESYS_OUT" --batch 50 \
-            > "$TRADESYS_OUT/run.log" 2>&1 && rc=0 || rc=$?
+          P=${{ inputs.per_job }}; OF=$(( ${{ inputs.slices }} * P )); rc=0
+          cd "$W"
+          for k in $(seq 0 $((P-1))); do
+            s=$(( ${{ matrix.slice }} * P + k ))
+            python -m tools.local_agent.cloud_run --grid "${{ inputs.grid }}" --slice "$s" \
+              --of "$OF" --limit "${{ inputs.limit }}" --out "$TRADESYS_OUT" --batch 50 \
+              > "$TRADESYS_OUT/run-$s.log" 2>&1 &
+          done
+          for p in $(jobs -p); do wait $p || rc=1; done
           echo "run_slice_wall_seconds=$(( $(date +%s) - t0 )) rc=$rc"
           exit $rc
       - name: Encrypt results
